@@ -1,127 +1,135 @@
-# ColorOS Feiniu Bridge
+# ColorOS 飞牛 Bridge
 
-LSPosed module for restoring Feiniu NAS access in ColorOS Gallery when Gallery cannot load the local token prefix through `cryptoeng cmd 26`.
+这是一个 LSPosed 模块，用于修复部分 ColorOS 相册无法连接飞牛 NAS 的问题。问题根因是相册在本地加载 token 解密 prefix 时调用 `cryptoeng cmd 26`，但系统底层拒绝了 `com.coloros.gallery3d` 进程，导致 prefix 为空、token 解密失败、NAS 连接流程无法继续。
 
-## What It Does
+## 功能
 
-- Targets only `com.coloros.gallery3d`.
-- Hooks `com.oplus.aiunit.vision.erq.e()`, the Gallery-side prefix loader.
-- Keeps the original `cryptoeng` path first. The module only supplies a fallback when the original method returns blank or null.
-- Discovers the prefix from the installed Gallery APK dex strings when possible.
-- Falls back to the currently verified Feiniu token prefix if the APK scan cannot find one.
-- Declares LSPosed/Xposed minimum API `101` and recommends the Gallery scope automatically.
+- 只作用于 `com.coloros.gallery3d`。
+- Hook 相册内的 `com.oplus.aiunit.vision.erq.e()`，也就是相册侧 prefix 加载方法。
+- 优先保留系统原始 `cryptoeng` 路径，只有原方法返回空字符串或 `null` 时才提供 fallback。
+- fallback 会优先解析当前安装的相册 APK dex 字符串池，自动提取包含 `GwToken` 的精确 prefix。
+- 如果 APK 扫描失败，会使用当前已验证的飞牛 token prefix 作为兜底。
+- 声明 LSPosed/Xposed 最低 API 为 `101`。
+- 模块内置作用域推荐，LSPosed 应自动推荐 `相册 / com.coloros.gallery3d`。
 
-## How It Works
+## 实现原理
 
-ColorOS Gallery builds Feiniu NAS `ConnectionSetupData` by decrypting the stored access token and refresh token. The token decryptor derives the AES-GCM key as:
+ColorOS 相册会通过已保存的 access token 和 refresh token 构造飞牛 NAS 的 `ConnectionSetupData`。token 解密使用 AES-GCM，密钥派生方式是：
 
 ```text
 SHA-256(prefix + deviceId)
 ```
 
-On affected builds, Gallery tries to obtain `prefix` through `cryptoeng cmd 26`, but the native service rejects the Gallery process with a permission error. As a result, the prefix is null, token decryption returns null, and Gallery never opens the NAS connection.
+受影响的系统版本中，相册会通过 `cryptoeng cmd 26` 获取 `prefix`。但 `cryptoeng` 根据调用进程做权限检查，拒绝了相册进程，导致 `prefix` 为 `null`。随后 token 解密返回 `null`，相册也就不会继续建立 NAS 连接。
 
-This module hooks only the prefix loading method after the original method returns. If the original method returns a usable prefix, the module does nothing. If the original method returns blank or null, the module scans the installed Gallery APK dex strings for the Feiniu `GwToken` prefix and returns it to Gallery. Gallery then continues its own token decrypt and connection flow.
+本模块只在原始 prefix 加载方法执行之后检查结果：
 
-The module does not fabricate tokens or connection objects. It only restores the missing local prefix value needed by the existing Gallery code path.
+- 如果原方法已经成功返回 prefix，模块不做任何修改。
+- 如果原方法返回空或 `null`，模块从相册 APK 的 dex 字符串池中解析飞牛 prefix 并返回给相册。
+- 相册随后继续执行它自己的 token 解密和 NAS 连接流程。
 
-## What It Does Not Do
+模块不会伪造 token，不会伪造连接对象，也不会跳过飞牛服务端认证。它只恢复相册原有链路缺失的本地 prefix 值。
 
-- Does not modify Gallery APK files.
-- Does not modify MyDevices, databases, account bindings, or NAS records.
-- Does not bypass Feiniu server authentication.
-- Does not print, store, upload, or expose access tokens.
-- Does not decrypt tokens outside the Gallery process.
+## 不做什么
 
-## Compatibility
+- 不修改相册 APK。
+- 不修改 MyDevices。
+- 不修改数据库。
+- 不修改账号绑定或 NAS 设备记录。
+- 不绕过飞牛服务端认证。
+- 不打印、不保存、不上传 token。
+- 不在相册进程外解密 token。
 
-LSPosed/Xposed requirement:
+## 兼容性
 
-- Minimum declared API: `101`
-- Recommended scope: `com.coloros.gallery3d`
-- Scope metadata is included in both `assets/scope.list` and `META-INF/xposed/scope.list`.
+LSPosed/Xposed 要求：
 
-Verified environment:
+- 最低声明 API：`101`
+- 推荐作用域：`com.coloros.gallery3d`
+- 作用域元数据同时放在 `assets/scope.list` 和 `META-INF/xposed/scope.list`。
 
-- Device: OnePlus PLK110
-- System: ColorOS V16.1.0 / Android 16
-- Gallery: `com.coloros.gallery3d` `16.35.10`
-- NAS service: Feiniu NAS on `:5667`
+已验证环境：
 
-The module should work on nearby ColorOS Gallery versions if these stay unchanged:
+- 设备：OnePlus PLK110
+- 系统：ColorOS V16.1.0 / Android 16
+- 相册：`com.coloros.gallery3d` `16.35.10`
+- 飞牛 NAS 服务端口：`:5667`
 
-- Target package: `com.coloros.gallery3d`
-- Token decryptor class: `com.oplus.aiunit.vision.erq`
-- Prefix loader method: `e()`
-- Token key derivation: `SHA-256(prefix + deviceId)`
+附近版本理论上也可用，但需要保持以下点不变：
 
-If OPPO/OnePlus changes class names or token derivation in a later Gallery build, this module may need an update.
+- 目标包名：`com.coloros.gallery3d`
+- token 解密类：`com.oplus.aiunit.vision.erq`
+- prefix 加载方法：`e()`
+- token 密钥派生方式：`SHA-256(prefix + deviceId)`
 
-## Build
+如果 OPPO/OnePlus 后续改了混淆类名、方法名或 token 派生方式，模块需要跟进适配。
 
-GitHub Actions builds APK artifacts automatically on every push, pull request, and manual workflow run. See `.github/workflows/build.yml`.
+## 构建
 
-With Android Studio, open this directory and run the `app` build task.
+GitHub Actions 会在每次 push、pull request 和手动触发时自动构建 APK，并上传 debug/release unsigned APK artifact。
 
-With a local Gradle installation:
+也可以用 Android Studio 打开本仓库，然后运行 `app` 构建任务。
+
+本地有 Gradle 时可以执行：
 
 ```bash
 gradle :app:assembleRelease
 ```
 
-If you want a repository-local wrapper before publishing, run this once from the project root on a machine with Gradle installed:
+如果发布前需要仓库内置 Gradle Wrapper，可以在有 Gradle 的机器上执行一次：
 
 ```bash
 gradle wrapper --gradle-version 8.7
 ```
 
-The APK will be generated at:
+构建产物位置：
 
 ```text
 app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-Sign it with your own key before distribution.
+release APK 需要自行签名后再分发。
 
-## Install
+## 安装
 
-1. Install the signed APK.
-2. Enable it in LSPosed.
-3. LSPosed should recommend `相册` / `com.coloros.gallery3d` automatically. Keep only that scope enabled.
-4. Force stop Gallery or reboot.
-5. Open Gallery and enter the Feiniu NAS/private cloud entry.
+1. 安装已签名 APK，或者安装 GitHub Actions 生成的 debug APK。
+2. 在 LSPosed 中启用模块。
+3. LSPosed 应自动推荐 `相册 / com.coloros.gallery3d` 作用域，只保留这个作用域即可。
+4. 强停相册或重启手机。
+5. 打开相册，进入飞牛 NAS / 私有云入口。
 
-## Expected Logs
+## 预期日志
 
-LSPosed log should include:
+LSPosed 日志中应能看到：
 
 ```text
 ColorOSFeiniuBridge: installed for com.coloros.gallery3d
 ColorOSFeiniuBridge: prefix fallback supplied len=33
 ```
 
-Gallery should then continue its original connection flow and connect to the NAS service.
+随后相册会继续原有连接流程，并连接飞牛 NAS 服务。
 
-## Troubleshooting
+## 排查
 
-- `install failed: ClassNotFoundException`: Gallery obfuscation changed. Re-identify the TokenDecryptor class.
-- No `prefix fallback supplied`: the original `cryptoeng` path may already work, or the Feiniu entry was not triggered.
-- Still cannot connect after fallback: check Gallery logs for `AEADBadTagException`, token expiry, NAS reachability, or account binding issues.
-- Token decrypts but albums are empty: this module only restores connection setup; album sync/index state is handled by Gallery and Feiniu NAS.
+- 没有 `ColorOSFeiniuBridge` 日志：模块没有被 LSPosed 加载，检查模块是否启用、作用域是否包含 `com.coloros.gallery3d`、是否重启或强停相册。
+- `install failed: ClassNotFoundException`：相册混淆类名变了，需要重新定位 token 解密类。
+- 没有 `prefix fallback supplied`：原始 `cryptoeng` 可能已经成功，或者没有触发飞牛入口。
+- fallback 后仍无法连接：检查相册日志里是否有 `AEADBadTagException`、token 过期、NAS 不可达、账号绑定异常等问题。
+- token 解密成功但相册为空：本模块只恢复连接构造，照片索引和同步状态由相册与飞牛 NAS 自身处理。
 
-Useful checks:
+常用排查命令：
 
 ```bash
 adb shell logcat | grep -iE 'ColorOSFeiniuBridge|FeiniuNasSDK|TokenDecryptor|NasAlbum|cryptoeng'
 adb shell su -c 'ss -tnp | grep 5667'
 ```
 
-## Security Notes
+## 安全说明
 
-This module is intended for users accessing their own Feiniu NAS from their own ColorOS device. It restores a local prefix loading failure in Gallery and leaves the normal encrypted token and server validation flow intact.
+本模块仅用于用户访问自己拥有并已绑定的飞牛 NAS。模块恢复的是相册本地 prefix 加载失败的问题，不改变 token 来源、不改变服务端校验、不改变账号或设备绑定。
 
-Do not use this module to access devices, accounts, or NAS services you do not own or have permission to use.
+请不要将本模块用于访问你不拥有或无权访问的设备、账号或 NAS 服务。
 
-## License
+## 许可证
 
 MIT

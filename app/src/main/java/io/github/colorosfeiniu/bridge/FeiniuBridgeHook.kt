@@ -75,16 +75,65 @@ class FeiniuBridgeHook : IXposedHookLoadPackage {
                         val entry = entries.nextElement()
                         if (!entry.name.endsWith(".dex")) continue
                         val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                        val text = bytes.toString(Charsets.ISO_8859_1)
-                        extractPrefix(text)?.let { return@use it }
+                        findFromDexStrings(bytes)?.let { return@use it }
                     }
                     null
                 }
             }.getOrNull()
         }
 
-        private fun extractPrefix(text: String): String? {
-            return PREFIX_REGEX.find(text)?.value
+        private fun findFromDexStrings(dex: ByteArray): String? {
+            if (dex.size < DEX_HEADER_SIZE || !dex.startsWithDexMagic()) return null
+
+            val stringIdsSize = dex.readUIntLe(DEX_STRING_IDS_SIZE_OFFSET)
+            val stringIdsOffset = dex.readUIntLe(DEX_STRING_IDS_OFFSET_OFFSET)
+            if (stringIdsSize <= 0 || stringIdsOffset <= 0) return null
+
+            for (index in 0 until stringIdsSize) {
+                val stringIdOffset = stringIdsOffset + index * DEX_STRING_ID_SIZE
+                if (stringIdOffset + DEX_STRING_ID_SIZE > dex.size) return null
+
+                val stringDataOffset = dex.readUIntLe(stringIdOffset)
+                val stringValue = dex.readDexString(stringDataOffset) ?: continue
+                if (stringValue.isFeiniuPrefix()) return stringValue
+            }
+
+            return null
+        }
+
+        private fun ByteArray.startsWithDexMagic(): Boolean {
+            return size >= 4 && this[0] == 'd'.code.toByte() && this[1] == 'e'.code.toByte() &&
+                this[2] == 'x'.code.toByte() && this[3] == '\n'.code.toByte()
+        }
+
+        private fun ByteArray.readUIntLe(offset: Int): Int {
+            if (offset < 0 || offset + 4 > size) return -1
+            return (this[offset].toInt() and 0xff) or
+                ((this[offset + 1].toInt() and 0xff) shl 8) or
+                ((this[offset + 2].toInt() and 0xff) shl 16) or
+                ((this[offset + 3].toInt() and 0xff) shl 24)
+        }
+
+        private fun ByteArray.readDexString(offset: Int): String? {
+            if (offset < 0 || offset >= size) return null
+
+            var cursor = offset
+            while (cursor < size) {
+                val value = this[cursor].toInt() and 0xff
+                cursor++
+                if ((value and 0x80) == 0) break
+            }
+            if (cursor >= size) return null
+
+            val start = cursor
+            while (cursor < size && this[cursor].toInt() != 0) cursor++
+            if (cursor >= size || cursor == start) return null
+
+            return runCatching { String(this, start, cursor - start, Charsets.UTF_8) }.getOrNull()
+        }
+
+        private fun String.isFeiniuPrefix(): Boolean {
+            return length in 16..80 && PREFIX_REGEX.matches(this)
         }
     }
 
@@ -93,7 +142,11 @@ class FeiniuBridgeHook : IXposedHookLoadPackage {
         private const val TOKEN_DECRYPTOR_CLASS = "com.oplus.aiunit.vision.erq"
         private const val PREFIX_METHOD = "e"
         private const val KNOWN_PREFIX = "tRiM@2025#GwToken!sEcReT*kEy&vALu"
-        private val PREFIX_REGEX = Regex("""[A-Za-z0-9@#_!*&$%+?.-]{8,80}GwToken[A-Za-z0-9@#_!*&$%+?.-]{4,80}""")
+        private const val DEX_HEADER_SIZE = 0x70
+        private const val DEX_STRING_IDS_SIZE_OFFSET = 0x38
+        private const val DEX_STRING_IDS_OFFSET_OFFSET = 0x3c
+        private const val DEX_STRING_ID_SIZE = 4
+        private val PREFIX_REGEX = Regex("""[A-Za-z][A-Za-z0-9@#_!*&$%+?.-]{7,79}GwToken[A-Za-z0-9@#_!*&$%+?.-]{4,80}""")
 
         private fun Any?.isNullOrBlankString(): Boolean {
             return (this as? String).isNullOrBlank()
