@@ -1,4 +1,4 @@
-name: Build
+name: Build and Release
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
+# 🌟 核心修改 1：赋予工作流创建和写入 Release 的权限
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,14 +33,41 @@ jobs:
       - name: Build APKs
         run: gradle :app:assembleDebug :app:assembleRelease
 
-      - name: Upload debug APK
+      # 这里的编译产物保留，方便在 Actions 页面临时查看
+      - name: Upload debug APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: coloros-feiniu-bridge-debug
           path: app/build/outputs/apk/debug/*.apk
 
-      - name: Upload release APK
-        uses: actions/upload-artifact@v4
+      # 🌟 核心修改 2：使用签名工具对 Release APK 进行对齐和自动签名
+      # 提示：LSPosed 模块通常直接用 Android 默认的调试签名（Debug Key）即可正常工作
+      - name: Sign Release APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
         with:
-          name: coloros-feiniu-bridge-release-unsigned
-          path: app/build/outputs/apk/release/*.apk
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        continue-on-error: true # 如果你没有配置 Secrets 密钥，这一步会跳过，下面会默认发布 Debug 版
+
+      # 🌟 核心修改 3：自动生成 Tag 并发布到 Release 页面
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 自动生成一个带有当前时间戳的唯一 Tag 标签，防止冲突（例如: v20260616-1305）
+          tag_name: v${{ github.run_id }}-${{ github.run_number }}
+          name: "ColorOS Feiniu Bridge 自动构建版"
+          body: |
+            这是由 GitHub Actions 自动编译生成的最新版本。
+            
+            **变更日志：**
+            - 现代化重构 AndroidManifest.xml 作用域声明
+            - 彻底移除过时的 `scope.list` 文件
+          draft: false
+          prerelease: false
+          files: |
+            app/build/outputs/apk/debug/*.apk
+            ${{ steps.sign_app.outputs.signedReleaseFile }}
